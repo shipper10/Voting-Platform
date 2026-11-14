@@ -5,11 +5,9 @@
 
 create type election_type   as enum ('leadership', 'name_proposals', 'referendum');
 create type box_status      as enum ('draft', 'scheduled', 'open', 'paused', 'closed', 'cancelled');
-create type results_status  as enum ('none', 'under_review', 'approved', 'published');
-create type privacy_level   as enum ('strong_anonymous', 'restricted_administrative');
+create type results_status  as enum ('none', 'under_review', 'published');
 create type section_kind    as enum ('top_n', 'explicit_roles', 'single', 'multi', 'ranked', 'stars', 'yes_no');
 create type candidate_status as enum ('pending', 'approved', 'rejected', 'withdrawn');
-create type admin_role      as enum ('super_admin', 'election_manager', 'auditor', 'results_officer', 'privacy_approver');
 create type results_visibility as enum ('hidden_until_published', 'live');
 create type tie_policy      as enum ('runoff', 'declare_tie');
 create type conflict_policy as enum ('separate', 'cumulative');
@@ -22,17 +20,13 @@ create table allowed_students (
   created_at    timestamptz not null default now()
 );
 
+-- مشرف واحد غالباً. المالك (is_owner) يستطيع إضافة مشرفين آخرين عند الحاجة؛ كل المشرفين بصلاحيات متساوية.
 create table admin_users (
   user_id      uuid primary key references auth.users (id),
   display_name text,
+  is_owner     boolean not null default false,
   active       boolean not null default true,
   created_at   timestamptz not null default now()
-);
-
-create table admin_roles (
-  user_id uuid not null references admin_users (user_id),
-  role    admin_role not null,
-  primary key (user_id, role)
 );
 
 -- ───────── الانتخابات ─────────
@@ -43,7 +37,6 @@ create table elections (
   type               election_type not null,
   box_status         box_status not null default 'draft',
   results_status     results_status not null default 'none',
-  privacy_level      privacy_level not null,
   results_visibility results_visibility not null default 'hidden_until_published',
   starts_at          timestamptz not null,
   ends_at            timestamptz not null,
@@ -52,7 +45,7 @@ create table elections (
   min_turnout        integer check (min_turnout is null or min_turnout >= 0),
   runoff_of          uuid references elections (id),
   runoff_reason      text,
-  runoff_approved_by uuid references admin_users (user_id),
+  runoff_created_by  uuid references admin_users (user_id),
   locked_at          timestamptz,
   created_by         uuid references admin_users (user_id),
   created_at         timestamptz not null default now(),
@@ -112,30 +105,23 @@ create table election_revisions (
 );
 
 -- ───────── المشاركة وأوراق الاقتراع ─────────
--- سجل المشاركة: يثبت أن الرقم شارك، ولا يحوي أي اختيار.
--- الوقت مقرّب إلى الساعة عمداً. مفتاح Idempotency يحفظ مُجزّأً هنا فقط.
+-- التصويت غير مجهول: الورقة مرتبطة بالرقم الجامعي (يُعلَن للناخب قبل التصويت).
+-- سجل المشاركة: قيد فريد (انتخابات، رقم) + مفتاح Idempotency مُجزّأ.
 create table voter_participation (
   election_id     uuid not null references elections (id),
   university_id   text not null references allowed_students (university_id),
   idempotency_hash text not null,
-  participated_hour timestamptz not null default date_trunc('hour', now()),
+  participated_at timestamptz not null default now(),
   primary key (election_id, university_id)
 );
 
--- ورقة الاقتراع: معرّف عشوائي، بلا توقيت ولا هوية. الإيصال مُجزّأ.
+-- ورقة الاقتراع: مرتبطة بالرقم الجامعي. الإيصال مُجزّأ (لا يكشف الاختيار).
 create table ballot_sheets (
-  id           uuid primary key default gen_random_uuid(),
-  election_id  uuid not null references elections (id),
-  receipt_hash text not null unique,
-  unique (id, election_id)
-);
-
--- الربط الهوية↔الورقة: يُملأ فقط في السرية الإدارية المحدودة.
-create table ballot_identity_links (
-  sheet_id      uuid primary key,
-  election_id   uuid not null,
+  id            uuid primary key default gen_random_uuid(),
+  election_id   uuid not null references elections (id),
   university_id text not null references allowed_students (university_id),
-  foreign key (sheet_id, election_id) references ballot_sheets (id, election_id),
+  receipt_hash  text not null unique,
+  unique (id, election_id),
   unique (election_id, university_id)
 );
 
@@ -173,12 +159,9 @@ create table election_results (
   report_sha256  text not null,
   status         results_status not null default 'under_review',
   submitted_by   uuid not null,
-  approved_by    uuid,
   published_by   uuid,
   created_at     timestamptz not null default now(),
-  approved_at    timestamptz,
-  published_at   timestamptz,
-  check (approved_by is null or approved_by <> submitted_by)
+  published_at   timestamptz
 );
 
 create table admin_audit_logs (
@@ -190,26 +173,6 @@ create table admin_audit_logs (
   reason      text,
   details     jsonb not null default '{}'::jsonb,
   created_at  timestamptz not null default now()
-);
-
--- الوصول الاستثنائي (Break-glass) — السرية الإدارية فقط
-create table identity_access_requests (
-  id           uuid primary key default gen_random_uuid(),
-  election_id  uuid not null references elections (id),
-  requested_by uuid not null references admin_users (user_id),
-  reason       text not null check (length(btrim(reason)) >= 10),
-  status       text not null default 'pending' check (status in ('pending', 'approved', 'denied', 'expired', 'used')),
-  created_at   timestamptz not null default now(),
-  expires_at   timestamptz not null default now() + interval '24 hours'
-);
-
-create table identity_access_approvals (
-  request_id uuid not null references identity_access_requests (id),
-  approver   uuid not null references admin_users (user_id),
-  approve    boolean not null,
-  note       text,
-  decided_at timestamptz not null default now(),
-  primary key (request_id, approver)
 );
 
 create table incident_log (

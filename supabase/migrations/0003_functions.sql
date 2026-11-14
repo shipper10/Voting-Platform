@@ -1,19 +1,22 @@
 -- 0003_functions.sql — الصلاحيات، دورة حياة الانتخابات، التصويت الذري، النتائج، الوصول الاستثنائي
 
 -- ───────── أدوات مساعدة ─────────
-create function has_role(variadic roles admin_role[]) returns boolean
+create function is_admin() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from admin_users u join admin_roles r using (user_id)
-    where u.user_id = auth.uid() and u.active and r.role = any (roles)
-  );
+  select exists (select 1 from admin_users u where u.user_id = auth.uid() and u.active);
 $$;
 
-create function require_role(variadic roles admin_role[]) returns void
+create function require_admin() returns void
 language plpgsql stable security definer set search_path = public as $$
 begin
-  if not has_role(variadic roles) then
-    raise exception 'غير مصرح' using errcode = '42501';
+  if not is_admin() then raise exception 'غير مصرح' using errcode = '42501'; end if;
+end $$;
+
+create function require_owner() returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not exists (select 1 from admin_users u where u.user_id = auth.uid() and u.active and u.is_owner) then
+    raise exception 'للمالك فقط' using errcode = '42501';
   end if;
 end $$;
 
@@ -42,7 +45,7 @@ create function set_box_status(p_election uuid, p_new box_status, p_reason text)
 language plpgsql security definer set search_path = public as $$
 declare e elections; ok boolean; n_rev int; snap jsonb; bad text;
 begin
-  perform require_role('election_manager', 'super_admin');
+  perform require_admin();
   if p_reason is null or length(btrim(p_reason)) < 3 then
     raise exception 'السبب إجباري' using errcode = 'P0001';
   end if;
@@ -97,7 +100,7 @@ end $$;
 create function review_proposal(p_candidate uuid, p_decision candidate_status, p_reason text) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  perform require_role('election_manager', 'super_admin');
+  perform require_admin();
   if p_decision not in ('approved', 'rejected') or p_reason is null or length(btrim(p_reason)) < 3 then
     raise exception 'قرار/سبب غير صالح' using errcode = 'P0001';
   end if;
@@ -228,12 +231,8 @@ begin
 
   v_receipt := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 12));
   v_receipt := substr(v_receipt, 1, 4) || '-' || substr(v_receipt, 5, 4) || '-' || substr(v_receipt, 9, 4);
-  insert into ballot_sheets (election_id, receipt_hash) values (p_election, sha256_hex(v_receipt))
+  insert into ballot_sheets (election_id, university_id, receipt_hash) values (p_election, p_university_id, sha256_hex(v_receipt))
   returning id into v_sheet;
-
-  if e.privacy_level = 'restricted_administrative' then
-    insert into ballot_identity_links (sheet_id, election_id, university_id) values (v_sheet, p_election, p_university_id);
-  end if;
 
   for c in select * from jsonb_array_elements(p_choices) loop
     if coalesce((c ->> 'abstain')::boolean, false) then
@@ -265,7 +264,7 @@ $$;
 create function election_turnout(p_election uuid) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform require_role('super_admin', 'election_manager', 'auditor', 'results_officer');
+  perform require_admin();
   return jsonb_build_object(
     'eligible', (select count(*) from allowed_students where status = 'active'),
     'participated', (select count(*) from voter_participation where election_id = p_election),
@@ -277,7 +276,7 @@ create function export_choices(p_election uuid) returns table (
   sheet_id uuid, section_id uuid, candidate_id uuid, role text, rating smallint, rank smallint, other_text text, abstain boolean)
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform require_role('results_officer', 'auditor');
+  perform require_admin();
   if (select box_status from elections where id = p_election) <> 'closed' then
     raise exception 'الفرز بعد إغلاق الصندوق فقط' using errcode = 'P0001';
   end if;
@@ -290,93 +289,85 @@ create function submit_results(p_election uuid, p_result jsonb, p_rules_version 
 language plpgsql security definer set search_path = public as $$
 declare rid uuid;
 begin
-  perform require_role('results_officer');
+  perform require_admin();
   if (select box_status from elections where id = p_election) <> 'closed' then
     raise exception 'الصندوق لم يُغلق' using errcode = 'P0001';
   end if;
-  if exists (select 1 from election_results where election_id = p_election and status in ('approved', 'published')) then
-    raise exception 'نتائج معتمدة بالفعل' using errcode = 'P0001';
+  if exists (select 1 from election_results where election_id = p_election and status = 'published') then
+    raise exception 'نتائج منشورة بالفعل' using errcode = 'P0001';
   end if;
+  -- إعادة الاحتساب تستبدل المسودة السابقة قيد المراجعة (تبقى في سجل التدقيق)
+  delete from election_results where election_id = p_election and status = 'under_review';
   insert into election_results (election_id, rules_version, result, report_sha256, submitted_by)
   values (p_election, p_rules_version, p_result, sha256_hex(p_result::text), auth.uid()) returning id into rid;
   update elections set results_status = 'under_review' where id = p_election;
-  perform log_admin('results:submitted', 'election', p_election::text, null, jsonb_build_object('result_id', rid));
+  perform log_admin('results:computed', 'election', p_election::text, null,
+                    jsonb_build_object('result_id', rid, 'sha256', sha256_hex(p_result::text)));
   return rid;
-end $$;
-
-create function approve_results(p_result uuid) returns void
-language plpgsql security definer set search_path = public as $$
-declare r election_results;
-begin
-  perform require_role('election_manager', 'super_admin');
-  select * into r from election_results where id = p_result for update;
-  if r.status <> 'under_review' then raise exception 'ليست قيد المراجعة' using errcode = 'P0001'; end if;
-  if r.submitted_by = auth.uid() then raise exception 'يلزم معتمد مختلف عن مُعِدّ النتائج' using errcode = 'P0001'; end if;
-  update election_results set status = 'approved', approved_by = auth.uid(), approved_at = now() where id = p_result;
-  update elections set results_status = 'approved' where id = r.election_id;
-  perform log_admin('results:approved', 'election', r.election_id::text, null, jsonb_build_object('result_id', p_result));
 end $$;
 
 create function publish_results(p_result uuid) returns void
 language plpgsql security definer set search_path = public as $$
 declare r election_results;
 begin
-  perform require_role('election_manager', 'super_admin');
+  perform require_admin();
   select * into r from election_results where id = p_result for update;
-  if r.status <> 'approved' then raise exception 'النتائج غير معتمدة' using errcode = 'P0001'; end if;
+  if r.status <> 'under_review' then raise exception 'ليست قيد المراجعة' using errcode = 'P0001'; end if;
   update election_results set status = 'published', published_by = auth.uid(), published_at = now() where id = p_result;
   update elections set results_status = 'published' where id = r.election_id;
   perform log_admin('results:published', 'election', r.election_id::text, null, jsonb_build_object('result_id', p_result));
 end $$;
 
--- ───────── الوصول الاستثنائي (السرية الإدارية فقط) ─────────
-create function request_identity_access(p_election uuid, p_reason text) returns uuid
+-- ───────── المشرفون (المالك فقط) ─────────
+create function add_admin(p_user uuid, p_name text) returns void
 language plpgsql security definer set search_path = public as $$
-declare rid uuid;
 begin
-  perform require_role('election_manager', 'auditor', 'super_admin');
-  if (select privacy_level from elections where id = p_election) <> 'restricted_administrative' then
-    raise exception 'هذه الانتخابات سرية قوية؛ لا ربط للكشف' using errcode = 'P0001';
-  end if;
-  insert into identity_access_requests (election_id, requested_by, reason)
-  values (p_election, auth.uid(), p_reason) returning id into rid;
-  perform log_admin('identity_access:requested', 'election', p_election::text, p_reason, jsonb_build_object('request_id', rid));
-  return rid;
+  perform require_owner();
+  insert into admin_users (user_id, display_name) values (p_user, p_name)
+  on conflict (user_id) do update set active = true, display_name = excluded.display_name;
+  perform log_admin('admin:add', 'admin', p_user::text, null);
 end $$;
 
-create function decide_identity_access(p_request uuid, p_approve boolean, p_note text) returns void
+create function set_admin_active(p_user uuid, p_active boolean) returns void
 language plpgsql security definer set search_path = public as $$
-declare r identity_access_requests; n_ok int;
 begin
-  perform require_role('privacy_approver');
-  select * into r from identity_access_requests where id = p_request for update;
-  if r.status <> 'pending' or r.expires_at < now() then raise exception 'الطلب غير قابل للبت' using errcode = 'P0001'; end if;
-  if r.requested_by = auth.uid() then raise exception 'لا يوافق صاحب الطلب على طلبه' using errcode = 'P0001'; end if;
-  insert into identity_access_approvals (request_id, approver, approve, note) values (p_request, auth.uid(), p_approve, p_note);
-  if not p_approve then
-    update identity_access_requests set status = 'denied' where id = p_request;
-  else
-    select count(*) into n_ok from identity_access_approvals where request_id = p_request and approve;
-    if n_ok >= 2 then update identity_access_requests set status = 'approved' where id = p_request; end if;
-  end if;
-  perform log_admin('identity_access:' || case when p_approve then 'approved' else 'denied' end,
-                    'identity_access_request', p_request::text, p_note);
+  perform require_owner();
+  if p_user = auth.uid() then raise exception 'لا تعطّل حسابك' using errcode = 'P0001'; end if;
+  update admin_users set active = p_active where user_id = p_user and not is_owner;
+  if not found then raise exception 'لا يمكن تعديل هذا الحساب' using errcode = 'P0001'; end if;
+  perform log_admin('admin:' || case when p_active then 'enable' else 'disable' end, 'admin', p_user::text, null);
 end $$;
 
--- كشف الربط: مرة واحدة لكل طلب معتمد بموافقتين، وبتدقيق كامل. يعيد صفاً واحداً (sheet) لكل ناخب.
-create function reveal_identity_links(p_request uuid) returns table (sheet_id uuid, university_id text)
+-- ───────── جولة إعادة ─────────
+-- تنشئ انتخابات جديدة (مسودة) مرتبطة بالأصلية، بقسم واحد ومرشحين محددين. لا تُنقل الأصوات.
+create function create_runoff(p_election uuid, p_section uuid, p_candidates uuid[], p_seats int,
+                              p_reason text, p_starts timestamptz, p_ends timestamptz) returns uuid
 language plpgsql security definer set search_path = public as $$
-declare r identity_access_requests;
+declare e elections; s election_sections; new_e uuid; new_s uuid; c candidates;
 begin
-  select * into r from identity_access_requests where id = p_request for update;
-  if r.requested_by <> auth.uid() then raise exception 'صاحب الطلب فقط' using errcode = '42501'; end if;
-  if r.status <> 'approved' or r.expires_at < now()
-     or (select count(*) from identity_access_approvals where request_id = p_request and approve) < 2 then
-    raise exception 'لا موافقة مزدوجة سارية' using errcode = '42501';
+  perform require_admin();
+  if p_reason is null or length(btrim(p_reason)) < 3 then raise exception 'السبب إجباري' using errcode = 'P0001'; end if;
+  select * into e from elections where id = p_election;
+  if e.box_status <> 'closed' then raise exception 'الصندوق لم يُغلق' using errcode = 'P0001'; end if;
+  select * into s from election_sections where id = p_section and election_id = p_election;
+  if not found then raise exception 'قسم غير موجود' using errcode = 'P0001'; end if;
+  if cardinality(p_candidates) < 2 or p_seats < 1 or p_seats >= cardinality(p_candidates) then
+    raise exception 'مرشحون/مقاعد غير صالحة' using errcode = 'P0001';
   end if;
-  update identity_access_requests set status = 'used' where id = p_request;
-  perform log_admin('identity_access:revealed', 'election', r.election_id::text, r.reason,
-    jsonb_build_object('request_id', p_request,
-      'links', (select count(*) from ballot_identity_links where election_id = r.election_id)));
-  return query select l.sheet_id, l.university_id from ballot_identity_links l where l.election_id = r.election_id;
+  if exists (select 1 from unnest(p_candidates) x where not exists (select 1 from candidates where id = x and section_id = p_section)) then
+    raise exception 'مرشح لا يتبع القسم' using errcode = 'P0001';
+  end if;
+  insert into elections (title, description, type, starts_at, ends_at, tie_policy, conflict_policy, runoff_of, runoff_reason, runoff_created_by, created_by)
+  values ('جولة إعادة: ' || e.title || ' — ' || s.title, e.description, e.type, p_starts, p_ends, e.tie_policy, e.conflict_policy,
+          p_election, p_reason, auth.uid(), auth.uid()) returning id into new_e;
+  insert into election_sections (election_id, title, kind, seats, min_choices, max_choices, allow_abstain)
+  values (new_e, s.title, case when p_seats = 1 then 'single'::section_kind else 'top_n'::section_kind end,
+          p_seats, 1, case when p_seats = 1 then null else p_seats end, s.allow_abstain)
+  returning id into new_s;
+  for c in select * from candidates where id = any (p_candidates) order by display_order, id loop
+    insert into candidates (election_id, section_id, name, bio, image_url, display_order)
+    values (new_e, new_s, c.name, c.bio, c.image_url, c.display_order);
+  end loop;
+  perform log_admin('runoff:created', 'election', new_e::text, p_reason, jsonb_build_object('original', p_election, 'section', p_section));
+  return new_e;
 end $$;

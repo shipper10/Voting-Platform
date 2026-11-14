@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireAdmin } from "@/lib/admin";
-import { BOX_LABEL, KIND_LABEL, PRIVACY_LABEL, RESULTS_LABEL, TYPE_LABEL } from "@/lib/labels";
+import type { TallyResult } from "@/lib/tally";
+import { BOX_LABEL, KIND_LABEL, RESULTS_LABEL, TYPE_LABEL } from "@/lib/labels";
 import {
-  addCandidate, addSection, changeStatus, computeResults, decideAccess, requestAccess, resultsStep, reviewProposal,
+  addCandidate, addSection, changeStatus, computeResults, createRunoff, publishResults, reviewProposal,
 } from "../../actions";
 
 export const dynamic = "force-dynamic";
@@ -18,26 +19,25 @@ const NEXT: Record<string, [string, string][]> = {
 export default async function ElectionAdmin({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
   const { id } = await params;
   const { error } = await searchParams;
-  const { sb, has } = await requireAdmin();
+  const { sb } = await requireAdmin();
   const { data: e } = await sb.from("elections").select("*").eq("id", id).maybeSingle();
   if (!e) notFound();
-  const [{ data: sections }, { data: cands }, { data: results }, { data: requests }, turnout] = await Promise.all([
+  const [{ data: sections }, { data: cands }, { data: results }, turnout] = await Promise.all([
     sb.from("election_sections").select("*").eq("election_id", id).order("display_order"),
     sb.from("candidates").select("id,section_id,name,status").eq("election_id", id).order("display_order"),
-    sb.from("election_results").select("id,status,report_sha256,rules_version,created_at").eq("election_id", id).order("created_at", { ascending: false }),
-    sb.from("identity_access_requests").select("id,reason,status,requested_by,created_at").eq("election_id", id).order("created_at", { ascending: false }),
+    sb.from("election_results").select("id,status,report_sha256,rules_version,result,created_at").eq("election_id", id).order("created_at", { ascending: false }),
     sb.rpc("election_turnout", { p_election: id }),
   ]);
   const t = turnout.data as { eligible: number; participated: number } | null;
   const editable = e.box_status === "draft";
-  const mgr = has("election_manager", "super_admin");
+  const mgr = true;
   const pending = (cands ?? []).filter((c) => c.status === "pending");
 
   return (
     <div className="space-y-4">
       <Link href="/admin" className="text-sm underline">← لوحة التحكم</Link>
       <h1 className="text-xl font-bold">{e.title}</h1>
-      <p className="text-sm text-slate-600">{TYPE_LABEL[e.type]} · {PRIVACY_LABEL[e.privacy_level]} · الصندوق: {BOX_LABEL[e.box_status]} · النتائج: {RESULTS_LABEL[e.results_status]}</p>
+      <p className="text-sm text-slate-600">{TYPE_LABEL[e.type]} · الصندوق: {BOX_LABEL[e.box_status]} · النتائج: {RESULTS_LABEL[e.results_status]}</p>
       {error && <p className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800" role="alert">{error}</p>}
       {t && <p className="card text-sm">المشاركة: <b>{t.participated}</b> من <b>{t.eligible}</b> مؤهل (أعداد فقط، بلا هويات)</p>}
 
@@ -104,34 +104,38 @@ export default async function ElectionAdmin({ params, searchParams }: { params: 
       {e.box_status === "closed" && (
         <section className="card space-y-2">
           <h2 className="font-semibold">النتائج</h2>
-          {has("results_officer") && !results?.some((r) => r.status !== "under_review") && (
-            <form action={computeResults}><input type="hidden" name="election_id" value={id} /><button className="btn-primary w-full">احتساب النتائج من الأصوات الخام ورفعها للمراجعة</button></form>
+          {results?.[0]?.status !== "published" && (
+            <form action={computeResults}><input type="hidden" name="election_id" value={id} />
+              <button className="btn-primary w-full">{results?.length ? "إعادة احتساب النتائج" : "احتساب النتائج من الأصوات الخام"}</button></form>
           )}
-          {results?.map((r) => (
-            <div key={r.id} className="space-y-1 border-t pt-2 text-sm">
-              <p>الحالة: {RESULTS_LABEL[r.status]} · قواعد v{r.rules_version}</p>
-              <p className="break-all text-xs" dir="ltr">sha256 {r.report_sha256}</p>
-              {mgr && r.status === "under_review" && <form action={resultsStep}><input type="hidden" name="election_id" value={id} /><input type="hidden" name="result_id" value={r.id} /><input type="hidden" name="step" value="approve" /><button className="btn-ghost">اعتماد (يلزم مشرف غير مُعِدّ النتائج)</button></form>}
-              {mgr && r.status === "approved" && <form action={resultsStep}><input type="hidden" name="election_id" value={id} /><input type="hidden" name="result_id" value={r.id} /><input type="hidden" name="step" value="publish" /><button className="btn-primary">نشر</button></form>}
-            </div>
-          ))}
-        </section>
-      )}
-
-      {e.privacy_level === "restricted_administrative" && (
-        <section className="card space-y-2">
-          <h2 className="font-semibold">وصول استثنائي للربط (موافقة شخصين)</h2>
-          <form action={requestAccess} className="flex gap-2"><input type="hidden" name="election_id" value={id} />
-            <input name="reason" required minLength={10} placeholder="السبب الموثق (10 أحرف+)" className="input" /><button className="btn-ghost">طلب</button></form>
-          {requests?.map((r) => (
-            <div key={r.id} className="border-t pt-2 text-sm"><p>{r.reason} — <b>{r.status}</b></p>
-              {has("privacy_approver") && r.status === "pending" && (
-                <form action={decideAccess} className="flex flex-wrap gap-2"><input type="hidden" name="election_id" value={id} /><input type="hidden" name="request_id" value={r.id} />
-                  <input name="note" placeholder="ملاحظة" className="input flex-1" />
-                  <button name="approve" value="yes" className="btn-primary">موافقة</button><button name="approve" value="no" className="btn-danger">رفض</button></form>)}
-            </div>
-          ))}
-          <p className="text-xs text-slate-500">الكشف الفعلي يتم بدالة reveal_identity_links لصاحب الطلب بعد موافقتين (مرة واحدة، ومُدقَّق) — انظر docs/OPERATIONS.md.</p>
+          {results?.map((r) => {
+            const res = r.result as TallyResult;
+            return (
+              <div key={r.id} className="space-y-2 border-t pt-2 text-sm">
+                <p>الحالة: {RESULTS_LABEL[r.status]} · أوراق: {res.totalBallots} · قواعد v{r.rules_version}</p>
+                <p className="break-all text-xs" dir="ltr">sha256 {r.report_sha256}</p>
+                {res.sections.map((sec) => (
+                  <div key={sec.sectionId} className="rounded-xl bg-slate-50 p-2">
+                    <b>{sec.title}</b>: {sec.winners.map((w) => `${w.position === "president" ? "الرئيس " : w.position === "vice" ? "النائب " : ""}${w.name}`).join("، ") || "—"}
+                    {sec.tie && (
+                      <form action={createRunoff} className="mt-2 space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-2">
+                        <p>تعادل بين: {sec.tie.candidateIds.map((cid) => cands?.find((c) => c.id === cid)?.name).join("، ")} (مقاعد: {sec.tie.seatsAtStake})</p>
+                        <input type="hidden" name="election_id" value={id} /><input type="hidden" name="section_id" value={sec.sectionId} />
+                        <input type="hidden" name="candidate_ids" value={sec.tie.candidateIds.join(",")} /><input type="hidden" name="seats" value={sec.tie.seatsAtStake} />
+                        <input name="reason" required minLength={3} placeholder="سبب الإعادة" className="input" />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input type="datetime-local" name="starts_at" required className="input" dir="ltr" />
+                          <input type="datetime-local" name="ends_at" required className="input" dir="ltr" />
+                        </div>
+                        <button className="btn-ghost w-full">إنشاء جولة إعادة (مسودة)</button>
+                      </form>
+                    )}
+                  </div>
+                ))}
+                {r.status === "under_review" && <form action={publishResults}><input type="hidden" name="election_id" value={id} /><input type="hidden" name="result_id" value={r.id} /><button className="btn-primary w-full">نشر النتائج</button></form>}
+              </div>
+            );
+          })}
         </section>
       )}
     </div>

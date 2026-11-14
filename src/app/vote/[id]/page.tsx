@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
-import { PRIVACY_LABEL, PRIVACY_NOTICE } from "@/lib/labels";
 import VoteFlow, { type VoteElection } from "./VoteFlow";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +8,7 @@ export const dynamic = "force-dynamic";
 export default async function VotePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const sb = await supabaseServer();
-  const { data: e } = await sb.from("elections").select("id,title,description,privacy_level,box_status,starts_at,ends_at").eq("id", id).maybeSingle();
+  const { data: e } = await sb.from("elections").select("id,title,description,box_status,starts_at,ends_at").eq("id", id).maybeSingle();
   if (!e) notFound();
   if (e.box_status !== "open") {
     return (
@@ -25,8 +24,7 @@ export default async function VotePage({ params }: { params: Promise<{ id: strin
     sb.from("candidates").select("id,section_id,name,bio,image_url,display_order").eq("election_id", id).eq("status", "approved").order("display_order"),
   ]);
   const election: VoteElection = {
-    id: e.id, title: e.title, description: e.description, privacy: e.privacy_level,
-    privacyLabel: PRIVACY_LABEL[e.privacy_level], privacyNotice: PRIVACY_NOTICE[e.privacy_level],
+    id: e.id, title: e.title, description: e.description,
     sections: (sections ?? []).map((s) => ({
       ...s, candidates: (candidates ?? []).filter((c) => c.section_id === s.id),
     })),

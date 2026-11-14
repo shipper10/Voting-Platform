@@ -26,7 +26,6 @@ export async function signOut() {
 const ElectionForm = z.object({
   title: z.string().min(2).max(200),
   type: z.enum(["leadership", "name_proposals", "referendum"]),
-  privacy_level: z.enum(["strong_anonymous", "restricted_administrative"]),
   tie_policy: z.enum(["runoff", "declare_tie"]),
   conflict_policy: z.enum(["separate", "cumulative"]),
   starts_at: z.string().min(1), ends_at: z.string().min(1),
@@ -113,29 +112,40 @@ export async function computeResults(formData: FormData) {
   if (e2) return fail(`/admin/elections/${eid}`, e2.message);
   redirect(`/admin/elections/${eid}`);
 }
-export async function resultsStep(formData: FormData) {
+export async function publishResults(formData: FormData) {
   const { sb } = await requireAdmin();
   const eid = str(formData, "election_id");
-  const fn = str(formData, "step") === "publish" ? "publish_results" : "approve_results";
-  const { error } = await sb.rpc(fn, { p_result: str(formData, "result_id") });
+  const { error } = await sb.rpc("publish_results", { p_result: str(formData, "result_id") });
   if (error) return fail(`/admin/elections/${eid}`, error.message);
   redirect(`/admin/elections/${eid}`);
 }
 
-// ───── الوصول الاستثنائي (السرية الإدارية) ─────
-export async function requestAccess(formData: FormData) {
+/** جولة إعادة لقسم تعادل: مرشحون محددون ومقاعد محددة؛ لا تُنقل الأصوات */
+export async function createRunoff(formData: FormData) {
   const { sb } = await requireAdmin();
   const eid = str(formData, "election_id");
-  const { error } = await sb.rpc("request_identity_access", { p_election: eid, p_reason: str(formData, "reason") });
+  const { data, error } = await sb.rpc("create_runoff", {
+    p_election: eid, p_section: str(formData, "section_id"),
+    p_candidates: str(formData, "candidate_ids").split(",").filter(Boolean),
+    p_seats: Number(str(formData, "seats") || 1), p_reason: str(formData, "reason"),
+    p_starts: new Date(str(formData, "starts_at")).toISOString(), p_ends: new Date(str(formData, "ends_at")).toISOString(),
+  });
   if (error) return fail(`/admin/elections/${eid}`, error.message);
-  redirect(`/admin/elections/${eid}`);
+  redirect(`/admin/elections/${data}`);
 }
-export async function decideAccess(formData: FormData) {
+
+// ───── المشرفون (المالك فقط) ─────
+export async function addAdmin(formData: FormData) {
   const { sb } = await requireAdmin();
-  const eid = str(formData, "election_id");
-  const { error } = await sb.rpc("decide_identity_access", { p_request: str(formData, "request_id"), p_approve: str(formData, "approve") === "yes", p_note: str(formData, "note") });
-  if (error) return fail(`/admin/elections/${eid}`, error.message);
-  redirect(`/admin/elections/${eid}`);
+  const { error } = await sb.rpc("add_admin", { p_user: str(formData, "user_id"), p_name: str(formData, "name") });
+  if (error) return fail("/admin/admins", error.message);
+  redirect("/admin/admins");
+}
+export async function toggleAdmin(formData: FormData) {
+  const { sb } = await requireAdmin();
+  const { error } = await sb.rpc("set_admin_active", { p_user: str(formData, "user_id"), p_active: str(formData, "active") === "yes" });
+  if (error) return fail("/admin/admins", error.message);
+  redirect("/admin/admins");
 }
 
 // ───── الطلاب ─────

@@ -1,12 +1,6 @@
-export const PRIVACY_LABEL: Record<string, string> = {
-  strong_anonymous: "سرية قوية",
-  restricted_administrative: "سرية إدارية محدودة",
-};
-export const PRIVACY_NOTICE: Record<string, string> = {
-  strong_anonymous: "هذا التصويت سري: لا يخزّن النظام أي رابط بين رقمك الجامعي واختياراتك.",
-  restricted_administrative:
-    "تنبيه: هذا التصويت ليس مجهول الهوية بالكامل. قد تتمكن لجنة مخولة، بموافقة شخصين وسبب موثق ومسجّل، من الاطلاع على الربط بين هويتك واختيارك.",
-};
+/** يُعرض للناخب قبل التصويت: التصويت غير مجهول */
+export const NOT_ANONYMOUS_NOTICE =
+  "تنبيه: هذا التصويت غير مجهول؛ اختياراتك مرتبطة برقمك الجامعي ويطّلع عليها المشرف فقط عند الضرورة.";
 export const BOX_LABEL: Record<string, string> = {
   draft: "مسودة", scheduled: "لم تبدأ", open: "مفتوحة", paused: "متوقفة مؤقتاً", closed: "مغلقة", cancelled: "ملغاة",
 };

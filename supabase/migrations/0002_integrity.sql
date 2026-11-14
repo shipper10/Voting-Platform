@@ -14,8 +14,6 @@ create trigger sheets_immutable before update or delete on ballot_sheets
   for each row execute function forbid_mutation();
 create trigger choices_immutable before update or delete on ballot_choices
   for each row execute function forbid_mutation();
-create trigger links_immutable before update or delete on ballot_identity_links
-  for each row execute function forbid_mutation();
 create trigger participation_immutable before update or delete on voter_participation
   for each row execute function forbid_mutation();
 
@@ -34,23 +32,11 @@ create trigger sheets_guard before insert on ballot_sheets
 create trigger choices_guard before insert on ballot_choices
   for each row execute function guard_ballot_insert();
 
--- 3) الربط بالهوية ممنوع نهائياً في السرية القوية
-create function guard_identity_link() returns trigger language plpgsql as $$
-begin
-  if (select privacy_level from elections where id = new.election_id) <> 'restricted_administrative' then
-    raise exception 'ممنوع تخزين ربط الهوية في السرية القوية' using errcode = 'P0001';
-  end if;
-  return new;
-end $$;
-create trigger links_guard before insert on ballot_identity_links
-  for each row execute function guard_identity_link();
-
 -- 4) قفل إعدادات الانتخابات بعد الجدولة/البدء
 create function guard_election_update() returns trigger language plpgsql as $$
 begin
   if old.box_status <> 'draft' and (
-       new.privacy_level   is distinct from old.privacy_level
-    or new.type            is distinct from old.type
+       new.type            is distinct from old.type
     or new.tie_policy      is distinct from old.tie_policy
     or new.conflict_policy is distinct from old.conflict_policy
     or new.starts_at       is distinct from old.starts_at and old.box_status <> 'scheduled'

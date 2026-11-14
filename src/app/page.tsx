@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { hasSupabaseEnv, supabaseServer } from "@/lib/supabase/server";
-import { BOX_LABEL, PRIVACY_LABEL, TYPE_LABEL } from "@/lib/labels";
+import { BOX_LABEL, TYPE_LABEL } from "@/lib/labels";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,7 @@ export default async function Home() {
   const sb = await supabaseServer();
   const { data: elections } = await sb
     .from("elections")
-    .select("id,title,type,box_status,results_status,privacy_level,starts_at,ends_at")
+    .select("id,title,type,box_status,results_status,starts_at,ends_at")
     .order("starts_at", { ascending: false });
 
   return (
@@ -24,7 +24,7 @@ export default async function Home() {
             <h2 className="text-lg font-semibold">{e.title}</h2>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs">{BOX_LABEL[e.box_status]}</span>
           </div>
-          <p className="text-sm text-slate-600">{TYPE_LABEL[e.type]} · {PRIVACY_LABEL[e.privacy_level]}</p>
+          <p className="text-sm text-slate-600">{TYPE_LABEL[e.type]}</p>
           <p className="text-sm text-slate-600" dir="ltr" style={{ textAlign: "right" }}>
             {new Date(e.starts_at).toLocaleString("ar-SD")} → {new Date(e.ends_at).toLocaleString("ar-SD")}
           </p>

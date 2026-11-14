@@ -35,16 +35,15 @@ declare
 begin
   -- ───── إعداد ─────
   insert into auth.users (id) values (mgr), (res), (ap1), (ap2), (aud), (sup);
-  insert into admin_users (user_id, display_name) select id, 'u' from auth.users;
-  insert into admin_roles values (mgr,'election_manager'), (res,'results_officer'), (ap1,'privacy_approver'),
-    (ap2,'privacy_approver'), (aud,'auditor'), (sup,'super_admin');
+  -- مالك واحد (mgr) + مشرف آخر (aud)؛ بقية المستخدمين ليسوا مشرفين
+  insert into admin_users (user_id, display_name, is_owner) values (mgr, 'owner', true), (aud, 'second', false);
   insert into allowed_students (university_id) select 'S' || g from generate_series(1, 9) g;
   insert into allowed_students (university_id, status) values ('FROZEN1', 'frozen');
 
   -- ───── المدير ينشئ انتخابات سرية قوية ─────
   perform t.as_('authenticated', mgr);
-  insert into elections (title, type, privacy_level, starts_at, ends_at, created_by)
-    values ('ليدر', 'leadership', 'strong_anonymous', now() - interval '1 hour', now() + interval '1 day', mgr) returning id into e1;
+  insert into elections (title, type, starts_at, ends_at, created_by)
+    values ('ليدر', 'leadership', now() - interval '1 hour', now() + interval '1 day', mgr) returning id into e1;
   insert into election_sections (election_id, title, kind, display_order) values (e1, 'الرئيس والنائب', 'explicit_roles', 1) returning id into sa;
   insert into election_sections (election_id, title, kind, allow_abstain, seats, max_choices) values (e1, 'الأمانة المالية', 'top_n', true, 2, 1) returning id into sb;
   insert into candidates (election_id, section_id, name) values (e1, sa, 'أ') returning id into c1;
@@ -63,7 +62,7 @@ begin
   perform t.as_('authenticated', mgr);
   perform set_box_status(e1, 'scheduled', 'اعتماد');
   select count(*) into n from election_revisions where election_id = e1; assert n = 1, 'لقطة إعدادات';
-  perform t.err($q$update elections set privacy_level = 'restricted_administrative' where id = $q$ || quote_literal(e1), 'مقفلة');
+  perform t.err($q$update elections set tie_policy = 'declare_tie' where id = $q$ || quote_literal(e1), 'مقفلة');
   perform t.err($q$insert into candidates (election_id, section_id, name) values ('$q$ || e1 || $q$', '$q$ || sa || $q$', 'متأخر')$q$, 'مقفلون');
   perform t.err($q$delete from candidates where id = '$q$ || c1 || $q$'$q$, 'مقفلون');
   perform t.err($q$select set_box_status('$q$ || e1 || $q$', 'closed', 'x')$q$, 'السبب إجباري');
@@ -91,8 +90,7 @@ begin
   select count(*) into n from voter_participation where election_id = e1; assert n = 1, 'مشاركة واحدة';
   select count(*) into n from ballot_sheets where election_id = e1; assert n = 1, 'ورقة واحدة';
   select count(*) into n from ballot_choices where election_id = e1; assert n = 3, 'صفوف الاختيار: ' || n;
-  select count(*) into n from ballot_identity_links; assert n = 0, 'لا ربط هوية في السرية القوية';
-  perform t.err($q$insert into ballot_identity_links select id, election_id, 'S1' from ballot_sheets$q$, 'السرية القوية');
+  assert (select university_id from ballot_sheets where election_id = e1) = 'S1', 'الورقة مرتبطة بالرقم';
 
   -- ───── أوراق غير صالحة ─────
   perform t.as_('service_role');

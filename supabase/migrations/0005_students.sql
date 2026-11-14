@@ -5,7 +5,7 @@ create function import_students(p_rows jsonb) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare n_new int; n_upd int;
 begin
-  perform require_role('election_manager', 'super_admin');
+  perform require_admin();
   if jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) > 20000 then
     raise exception 'مدخلات غير صالحة' using errcode = 'P0001';
   end if;
@@ -24,7 +24,7 @@ end $$;
 create function set_student_status(p_id text, p_status text, p_reason text) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  perform require_role('election_manager', 'super_admin');
+  perform require_admin();
   if p_status not in ('active', 'frozen') or p_reason is null or length(btrim(p_reason)) < 3 then
     raise exception 'مدخلات غير صالحة' using errcode = 'P0001';
   end if;

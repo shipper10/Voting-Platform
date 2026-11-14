@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { seededShuffle } from "@/lib/shuffle";
-import { VOTE_ERRORS } from "@/lib/labels";
+import { NOT_ANONYMOUS_NOTICE, VOTE_ERRORS } from "@/lib/labels";
 
 type Cand = { id: string; name: string; bio: string | null; image_url: string | null };
 type Section = {
@@ -10,8 +10,7 @@ type Section = {
   min_choices: number; max_choices: number | null; seats: number; candidates: Cand[];
 };
 export type VoteElection = {
-  id: string; title: string; description: string | null; privacy: string; privacyLabel: string;
-  privacyNotice: string; sections: Section[];
+  id: string; title: string; description: string | null; sections: Section[];
 };
 type Sel = { candidate_id: string; role?: "president" | "vice"; rating?: number; rank?: number };
 type Answer = { abstain: boolean; selections: Sel[]; other: string };
@@ -145,7 +144,7 @@ export default function VoteFlow({ election }: { election: VoteElection }) {
       {phase === "intro" && (
         <div className="card space-y-4">
           {election.description && <p>{election.description}</p>}
-          <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm"><b>{election.privacyLabel}:</b> {election.privacyNotice}</p>
+          <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm">{NOT_ANONYMOUS_NOTICE}</p>
           <div>
             <label className="label" htmlFor="uid">الرقم الجامعي</label>
             <input id="uid" className="input" inputMode="numeric" autoComplete="off" dir="ltr" value={uid} onChange={(e) => setUid(e.target.value)} />

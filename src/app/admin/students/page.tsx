@@ -6,9 +6,8 @@ import StudentsImport from "./StudentsImport";
 export const dynamic = "force-dynamic";
 
 export default async function Students({ searchParams }: { searchParams: Promise<{ error?: string; q?: string }> }) {
-  const { sb, has } = await requireAdmin();
+  const { sb } = await requireAdmin();
   const { error, q } = await searchParams;
-  if (!has("election_manager", "super_admin")) return <p className="card">غير مصرح.</p>;
   const [{ count }, { count: frozen }] = await Promise.all([
     sb.from("allowed_students").select("*", { count: "exact", head: true }),
     sb.from("allowed_students").select("*", { count: "exact", head: true }).eq("status", "frozen"),
