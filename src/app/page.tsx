@@ -30,11 +30,12 @@ export default async function Home() {
           </p>
           <div className="flex gap-2">
             {e.box_status === "open" && <Link className="btn-primary flex-1" href={`/vote/${e.id}`}>صوّت الآن</Link>}
+            {e.type === "name_proposals" && e.box_status === "scheduled" && <Link className="btn-primary flex-1" href={`/propose/${e.id}`}>قدّم مقترحاً</Link>}
             {e.results_status === "published" && <Link className="btn-ghost flex-1" href={`/results/${e.id}`}>النتائج</Link>}
           </div>
         </div>
       ))}
-      <p className="pt-4 text-center text-sm"><Link href="/admin" className="text-slate-500 underline">دخول اللجنة</Link></p>
+      <p className="pt-4 text-center text-sm"><Link href="/verify" className="ml-4 text-slate-500 underline">تحقق من إيصال</Link><Link href="/admin" className="text-slate-500 underline">دخول اللجنة</Link></p>
     </div>
   );
 }

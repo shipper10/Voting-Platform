@@ -172,3 +172,36 @@ begin
   perform t.as_('postgres');
   insert into t.ctx values ('conc_e', e::text), ('conc_s', s::text), ('conc_c', c::text);
 end $$;
+
+-- ───── الكتلة 7: مقترحات الطلاب ─────
+do $$
+declare mgr uuid := '00000000-0000-0000-0000-00000000000a'; e uuid; s uuid; n int; r jsonb;
+begin
+  perform t.as_('authenticated', mgr);
+  insert into elections (title, type, starts_at, ends_at, created_by)
+    values ('مقترحات', 'name_proposals', now() - interval '1 hour', now() + interval '1 day', mgr) returning id into e;
+  insert into election_sections (election_id, title, kind) values (e, 'اختر', 'single') returning id into s;
+  insert into candidates (election_id, section_id, name) values (e, s, 'الأول');
+  perform t.as_('service_role');
+  assert submit_proposal(e, 'S1', 'اسم') ->> 'status' = 'closed', 'المسودة لا تقبل مقترحات';
+  perform t.as_('authenticated', mgr);
+  perform set_box_status(e, 'scheduled', 'مرحلة المقترحات');
+  perform t.as_('service_role');
+  assert submit_proposal(e, 'S1', 'نور') ->> 'status' = 'ok';
+  assert submit_proposal(e, 'S2', '  نور ') ->> 'status' = 'duplicate', 'تكرار';
+  assert submit_proposal(e, 'NOPE', 'جديد') ->> 'status' = 'not_allowed';
+  assert submit_proposal(e, 'S2', 'x') ->> 'status' = 'invalid';
+  assert submit_proposal(e, 'S1', 'اسم2') ->> 'status' = 'ok';
+  assert submit_proposal(e, 'S1', 'اسم3') ->> 'status' = 'ok';
+  assert submit_proposal(e, 'S1', 'اسم4') ->> 'status' = 'limit', 'حد 3 مقترحات';
+  perform t.as_('anon');
+  select count(*) into n from candidates where election_id = e; assert n = 1, 'المعلّقة لا تظهر للعامة: ' || n;
+  perform t.as_('authenticated', mgr);
+  select count(*) into n from pending_proposals(e); assert n = 3, 'المشرف يرى المعلّقة';
+  perform t.as_('anon');
+  perform t.err('select * from pending_proposals(''' || e || ''')', 'permission denied');
+  perform t.as_('authenticated', mgr);
+  perform t.err('select withdraw_candidate(''' || (select id from candidates where election_id = e and name = 'الأول') || ''', '''')', 'السبب إجباري');
+  perform withdraw_candidate((select id from candidates where election_id = e and name = 'الأول'), 'انسحاب المرشح');
+  assert (select status from candidates where election_id = e and name = 'الأول') = 'withdrawn', 'سحب';
+end $$;

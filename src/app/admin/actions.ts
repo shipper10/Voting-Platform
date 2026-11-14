@@ -134,6 +134,21 @@ export async function createRunoff(formData: FormData) {
   redirect(`/admin/elections/${data}`);
 }
 
+export async function withdrawCandidate(formData: FormData) {
+  const { sb } = await requireAdmin();
+  const eid = str(formData, "election_id");
+  const { error } = await sb.rpc("withdraw_candidate", { p_candidate: str(formData, "candidate_id"), p_reason: str(formData, "reason") });
+  if (error) return fail(`/admin/elections/${eid}`, error.message);
+  redirect(`/admin/elections/${eid}`);
+}
+export async function addIncident(formData: FormData) {
+  const { sb, user } = await requireAdmin();
+  const eid = str(formData, "election_id");
+  const { error } = await sb.from("incident_log").insert({ election_id: eid, kind: str(formData, "kind"), description: str(formData, "description"), created_by: user.id });
+  if (error) return fail(`/admin/elections/${eid}`, error.message);
+  redirect(`/admin/elections/${eid}`);
+}
+
 // ───── المشرفون (المالك فقط) ─────
 export async function addAdmin(formData: FormData) {
   const { sb } = await requireAdmin();

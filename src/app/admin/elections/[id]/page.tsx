@@ -4,7 +4,7 @@ import { requireAdmin } from "@/lib/admin";
 import type { TallyResult } from "@/lib/tally";
 import { BOX_LABEL, KIND_LABEL, RESULTS_LABEL, TYPE_LABEL } from "@/lib/labels";
 import {
-  addCandidate, addSection, changeStatus, computeResults, createRunoff, publishResults, reviewProposal,
+  addCandidate, addIncident, addSection, changeStatus, computeResults, createRunoff, publishResults, reviewProposal, withdrawCandidate,
 } from "../../actions";
 
 export const dynamic = "force-dynamic";
@@ -22,16 +22,18 @@ export default async function ElectionAdmin({ params, searchParams }: { params: 
   const { sb } = await requireAdmin();
   const { data: e } = await sb.from("elections").select("*").eq("id", id).maybeSingle();
   if (!e) notFound();
-  const [{ data: sections }, { data: cands }, { data: results }, turnout] = await Promise.all([
+  const [{ data: sections }, { data: cands }, { data: results }, { data: pendingRows }, { data: incidents }, turnout] = await Promise.all([
     sb.from("election_sections").select("*").eq("election_id", id).order("display_order"),
     sb.from("candidates").select("id,section_id,name,status").eq("election_id", id).order("display_order"),
     sb.from("election_results").select("id,status,report_sha256,rules_version,result,created_at").eq("election_id", id).order("created_at", { ascending: false }),
+    sb.rpc("pending_proposals", { p_election: id }),
+    sb.from("incident_log").select("id,kind,description,created_at").eq("election_id", id).order("created_at", { ascending: false }),
     sb.rpc("election_turnout", { p_election: id }),
   ]);
   const t = turnout.data as { eligible: number; participated: number } | null;
   const editable = e.box_status === "draft";
   const mgr = true;
-  const pending = (cands ?? []).filter((c) => c.status === "pending");
+  const pending = (pendingRows ?? []) as { candidate_id: string; name: string; proposed_by: string | null }[];
 
   return (
     <div className="space-y-4">
@@ -59,7 +61,10 @@ export default async function ElectionAdmin({ params, searchParams }: { params: 
         {sections?.map((s) => (
           <div key={s.id} className="card space-y-2">
             <p><b>{s.title}</b> <span className="text-xs text-slate-500">{KIND_LABEL[s.kind]}{s.allow_abstain ? " · امتناع" : ""}{s.allow_other ? " · أخرى" : ""}</span></p>
-            <ul className="text-sm">{cands?.filter((c) => c.section_id === s.id).map((c) => <li key={c.id}>{c.name} <span className="text-xs text-slate-500">({c.status})</span></li>)}</ul>
+            <ul className="text-sm">{cands?.filter((c) => c.section_id === s.id).map((c) => <li key={c.id} className="py-1">{c.name} <span className="text-xs text-slate-500">({c.status})</span>
+              {!editable && c.status === "approved" && (
+                <form action={withdrawCandidate} className="mt-1 flex gap-2"><input type="hidden" name="election_id" value={id} /><input type="hidden" name="candidate_id" value={c.id} />
+                  <input name="reason" required minLength={3} placeholder="سبب السحب" className="input" /><button className="btn-danger">سحب</button></form>)}</li>)}</ul>
             {mgr && s.kind !== "yes_no" && (editable || e.box_status === "scheduled") && (
               <form action={addCandidate} className="flex gap-2">
                 <input type="hidden" name="election_id" value={id} /><input type="hidden" name="section_id" value={s.id} />
@@ -90,9 +95,9 @@ export default async function ElectionAdmin({ params, searchParams }: { params: 
       {mgr && pending.length > 0 && (
         <section className="card space-y-2"><h2 className="font-semibold">مقترحات بانتظار المراجعة</h2>
           {pending.map((c) => (
-            <form key={c.id} action={reviewProposal} className="flex flex-wrap gap-2">
-              <input type="hidden" name="election_id" value={id} /><input type="hidden" name="candidate_id" value={c.id} />
-              <span className="w-full">{c.name}</span>
+            <form key={c.candidate_id} action={reviewProposal} className="flex flex-wrap gap-2">
+              <input type="hidden" name="election_id" value={id} /><input type="hidden" name="candidate_id" value={c.candidate_id} />
+              <span className="w-full">{c.name} <span className="text-xs text-slate-500" dir="ltr">({c.proposed_by})</span></span>
               <input name="reason" required minLength={3} placeholder="السبب" className="input flex-1" />
               <button name="decision" value="approved" className="btn-primary">اعتماد</button>
               <button name="decision" value="rejected" className="btn-danger">رفض</button>
@@ -138,6 +143,15 @@ export default async function ElectionAdmin({ params, searchParams }: { params: 
           })}
         </section>
       )}
+      {results?.length ? <a className="btn-ghost w-full" href={`/admin/elections/${id}/export`}>تنزيل تقرير النتائج (CSV/Excel)</a> : null}
+
+      <section className="card space-y-2">
+        <h2 className="font-semibold">سجل الحوادث</h2>
+        {incidents?.map((i) => <p key={i.id} className="text-sm"><b>{i.kind}</b>: {i.description}</p>)}
+        <form action={addIncident} className="space-y-2"><input type="hidden" name="election_id" value={id} />
+          <select name="kind" className="input"><option value="outage">انقطاع خدمة</option><option value="technical_error">خطأ تقني</option><option value="complaint">شكوى</option><option value="impersonation_report">بلاغ انتحال</option><option value="procedural_correction">تصحيح إجرائي</option></select>
+          <input name="description" required minLength={3} placeholder="الوصف" className="input" /><button className="btn-ghost w-full">تسجيل</button></form>
+      </section>
     </div>
   );
 }
